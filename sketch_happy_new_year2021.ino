@@ -3,7 +3,8 @@
 
 #include <SD.h>             // библиотека для работы с SD картой
 #define SD_ChipSelectPin 10  //using digital pin 4 on arduino nano 328, can use other pins
-#include <TMRpcm.h>         // библиотека для работы с аудио
+//#include <TMRpcm.h>         // библиотека для работы с аудио
+#include "font.h"
 
 //Пин подключен к ST_CP входу 74HC595
 const int latchPin = 6;
@@ -11,17 +12,19 @@ const int latchPin = 6;
 const int clockPin = 7;
 //Пин подключен к DS входу 74HC595
 const int dataPin = 8;
-volatile uint16_t buff[8] = {0,0,0,0,0,0,0,0};
-volatile uint8_t col = 0;
-volatile uint8_t cPos = 4;
 
-TMRpcm tmrpcm;
+//TMRpcm tmrpcm;
 
 typedef enum {
   READY,
   PLAING,
   GAME_OVER
 } STATUS_GAME;
+
+typedef enum {
+  VERTICAL,
+  HORIZONTAL
+} TEXT_ORIENTATION;
 
 typedef enum {
   NONE,
@@ -32,11 +35,36 @@ typedef enum {
   CENTER
 } DIRECTION;
 
+typedef enum {
+  NONE_GAME,
+  SNAKE,
+  TETRIS
+} GAMES;
+
+typedef struct {
+  GAMES game;
+  const char text[30];
+} MENU;
+
 typedef struct {
   uint8_t x;
   uint16_t y;
   DIRECTION d;
 } FIFO;
+
+volatile uint16_t buff[8] = {0,0,0,0,0,0,0,0};
+volatile uint8_t col = 0;
+volatile uint8_t cPos = 4;
+volatile uint8_t game = NONE;
+MENU menu[2] = {{SNAKE,"Snake"}, {TETRIS, "Tetris"}};
+volatile uint8_t menuPos = 0;
+
+uint8_t reverse(uint8_t b) {
+   b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+   b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+   b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+   return b;
+}
 
 DIRECTION getDirection(void) {
   uint16_t adc = analogRead(A0);
@@ -92,15 +120,15 @@ void setup() {
   sei();
 
   // инициализация и настройка воспроизведения с карты
-  tmrpcm.speakerPin = 9;
-  tmrpcm.setVolume(5);
-  tmrpcm.quality(0);
+  //tmrpcm.speakerPin = 9;
+  //tmrpcm.setVolume(5);
+  //tmrpcm.quality(0);
 
   SD.begin(SD_ChipSelectPin);
 
   delay(300);
 
-  tmrpcm.play("music");
+  //tmrpcm.play("music");
 }
 
 ISR(TIMER2_OVF_vect)
@@ -135,6 +163,53 @@ void clearScreen(void){
     buff[i] = 0;
   }
   sei();
+}
+
+void printChar(uint8_t b, int offset, TEXT_ORIENTATION orientation){
+  unsigned int index = ((unsigned int)b*8);
+  for(uint8_t i = 0; i < 8; i++){
+    uint8_t v = pgm_read_byte(&font_8x8[index + i]);
+
+    if(orientation == VERTICAL){
+      buff[i] = ((uint16_t)reverse(v)<<8) >> offset;
+    } else {
+      for(uint8_t x = 0; x < 8; x++){
+        int o = i + offset;
+        if(o >= 0 && o < 16){
+          if(v & (1<<x)){
+            buff[x] |= (1<<o);
+          } else {
+            buff[x] &= ~(1<<o);
+          }
+        }
+      }
+    }
+  }
+}
+
+void printText(const char *str, TEXT_ORIENTATION orientation, uint8_t reset){
+  static int offset = 0;
+
+  if(reset){
+    offset  = 0;
+  }
+
+  clearScreen();
+  cli();
+  
+  int l = 0;
+  for(l = 0; l < strlen(str); l++){
+    int o = (l*8) - offset;
+    printChar(str[l], 16+o, orientation);
+  }
+  sei();
+  
+  offset++;
+  if(offset > (strlen(str) * 8) + 16){
+    offset = 0;
+  }
+
+  delay(100);
 }
 
 void matrix(){
@@ -196,27 +271,10 @@ void snakeGame(void) {
   static uint8_t speed = 1;
   static long int ms = millis();
 
-  if(status == READY || status == GAME_OVER){
-    switch(getDirection()){
-      case CENTER:
-        status = PLAING;
-      break;
-    }
-
-    matrix();
+  if(status == GAME_OVER){
+    game = NONE;
     return;
   }
-
-//  if(status == GAME_OVER){
-//    switch(getDirection()){
-//      case CENTER:
-//        status = READY;
-//      break;
-//    }
-//
-//    pac_man();
-//    return;
-//  }
 
   // init snake 
   if(snake == NULL){
@@ -284,8 +342,8 @@ void snakeGame(void) {
 
     bool collision = food.x == p.x && food.y == p.y;
     if(collision) {
-      tmrpcm.disable();
-      tmrpcm.play("eat.wav");
+      //tmrpcm.disable();
+      //tmrpcm.play("eat.wav");
       // next level
       speed++;
       // resize
@@ -382,10 +440,59 @@ void snakeGame(void) {
   delay(100);
 }
 
+void tetrisGame(void){
+  static uint8_t reset = 1;
+  printText("Not implement yet \x01", HORIZONTAL, reset);
+  reset = 0;
+}
+
 void loop() {
   // put your main code here, to run repeatedly:
   // matrix();
   // pac_man();
+  static uint8_t reset = 0;
+  uint8_t maxPos = (sizeof(menu)/sizeof(MENU))-1;
 
-  snakeGame();
+  switch(game){
+    case NONE_GAME:
+      
+      switch(getDirection()){
+        case DOWN:
+          if(menuPos > 0){
+            menuPos--;
+          } else {
+            menuPos = maxPos;
+          }
+          reset = 1;
+          break;
+        case UP:
+          if(menuPos < maxPos){
+            menuPos++;
+          } else {
+            menuPos = 0;
+          }
+          reset = 1;
+          break;
+         case CENTER:
+          game = menu[menuPos].game;
+         break;
+      }
+      
+      printText(menu[menuPos].text, HORIZONTAL, reset);
+      
+      if(reset){
+        delay(500);
+      }
+      
+      reset = 0;
+    break;
+
+    case SNAKE:
+      snakeGame();
+    break;
+
+    case TETRIS:
+      tetrisGame();
+    break;
+  }
 }
